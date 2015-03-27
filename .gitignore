@@ -27,3 +27,10 @@
 *.i*86
 *.x86_64
 *.hex
+
+# gen files
+.gpiomod_dual_hcsr04*
+.tmp_versions/
+Module.symvers
+gpiomod_dual_hcsr04.mod.c
+modules.order
