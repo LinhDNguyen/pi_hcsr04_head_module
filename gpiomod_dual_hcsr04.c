@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/fs.h>
+#include <asm/uaccess.h>
 
 #define DEVICE_MAJOR    (119)
 #define DEVICE_NAME     "dual_hcsr04"
