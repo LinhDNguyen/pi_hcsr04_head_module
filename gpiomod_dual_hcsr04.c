@@ -12,11 +12,11 @@
 #include <linux/interrupt.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
+#include <linux/time.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
-// #include <stdlib.h>
 
 #define DEVICE_MAJOR    (119)
 #define DEVICE_NAME     "dual_hcsr04"
@@ -24,6 +24,7 @@
 
 /* Timer struct, used to create an priodic timer */
 static struct timer_list schedule_timer;
+static struct timer_list distanceTimeoutTimer;
 
 /* Define GPIOs for trigger pin */
 static struct gpio triggers[] = {
@@ -39,14 +40,22 @@ static struct gpio echos[] = {
 /* Later on, the assigned IRQ numbers for the echos are stored here */
 static int echo_irqs[] = { -1, -1 };
 
+static struct task_struct *runThreads[2];
+
 /* Frequence of sampling */
 static int sampl_frequence = 0;
 
-/* Latest distance value */
-static float distance1 = -1, distance2 = -1;
+/* Echo signals time */
+static timespec startEcho1, startEcho2, endEcho1, endEcho2;
+
+static uint distance1, distance2;
+
+/* Flags */
+static bool echo1Finished, echo2Finished, startMeasureDistance;
 
 /* Character device structure */
-static int      raspi_gpio_open(struct inode *inode, struct file *filp);
+static int      raspi_gpio_open (   struct inode *inode,
+                                    struct file *filp);
 static ssize_t  raspi_gpio_read (   struct file *filp,
                                     char *buf,
                                     size_t count,
@@ -55,7 +64,8 @@ static ssize_t  raspi_gpio_write (  struct file *filp,
                                     const char *buf,
                                     size_t count,
                                     loff_t *f_pos);
-static int      raspi_gpio_release(struct inode *inode, struct file *filp);
+static int      raspi_gpio_release (struct inode *inode,
+                                    struct file *filp);
 /* File operation structure */
 static struct file_operations raspi_gpio_fops = {
                                                     .owner = THIS_MODULE,
@@ -64,6 +74,39 @@ static struct file_operations raspi_gpio_fops = {
                                                     .read = raspi_gpio_read,
                                                     .write = raspi_gpio_write,
                                                 };
+/*
+ * Calculate diferent of two time struct, return microsecond
+ */
+static long time_diff (struct timespec *t1, struct timespec *t2) {
+    int sec = t1->tv_sec - t2->tv_sec;
+    long nsec = t1->tv_nsec - t2->tv_nsec;
+
+    return sec * 1000000 + nsec/1000;
+}
+/*
+ * Calculate the distance of sensor.
+ */
+static uint calculate_distance(uint echoNum, bool isTimedOut) {
+    uint res = -1;
+    long usec = 0;
+    struct timespec *tend, *tstart;
+
+    if (echoNum == 1) {
+        tend = &endEcho1;
+        tstart = &startEcho1;
+    } else {
+        tend = &endEcho2;
+        tstart = &startEcho2;
+    }
+
+    if (!isTimedOut) {
+        // calculate
+        usec = time_diff(tend, tstart);
+        res = (usec * 1750) / 1000000;
+    }
+
+    return res;
+}
 
 /*
  * The interrupt service routine called on echo signal start/end
@@ -72,18 +115,84 @@ static irqreturn_t echo_isr(int irq, void *data)
 {
     if(irq == echo_irqs[0] && gpio_get_value(echos[0].gpio)) {
         // Echo 1 started
+        getnstimeofday(&startEcho1);
     } else if(irq == echo_irqs[0] && !gpio_get_value(echos[0].gpio)) {
         // Echo 1 ended
+        getnstimeofday(&endEcho1);
+        // Calculate the distance
+        distance1 = calculate_distance(1, false);
+        // set the flag.
+        echo1Finished = true;
     }
     if(irq == echo_irqs[1] && gpio_get_value(echos[1].gpio)) {
         // Echo 2 started
+        getnstimeofday(&startEcho2);
     } else if(irq == echo_irqs[1] && !gpio_get_value(echos[1].gpio)) {
         // Echo 2 ended
+        getnstimeofday(&endEcho2);
+        // Calculate the distance
+        distance2 = calculate_distance(2, false);
+        // set the flag.
+        echo2Finished = true;
     }
 
     return IRQ_HANDLED;
 }
 
+/*
+ * Echo signal is timed out
+ */
+static void echo_timeout(unsigned long data)
+{
+    printk(KERN_INFO "%s\n", __func__);
+
+    if (!echo1Finished) {
+        distance1 = calculate_distance(1, true);
+        // set the flag.
+        echo1Finished = true;
+    }
+    if (!echo2Finished) {
+        distance2 = calculate_distance(2, true);
+        // set the flag.
+        echo2Finished = true;
+    }
+    del_timer_sync(&distanceTimeoutTimer);
+}
+/*
+ * Get distance thread. This thread always get distance value from dual HC-SR04
+ * sensors.
+ */
+static int get_distance_thread(void *data)
+{
+
+    while(true) {
+        if (startMeasureDistance) {
+            startMeasureDistance = false;
+            // Set trigger pin in 2us
+            gpio_set_value(triggers[0].gpio, 1);
+            udelay(2);
+            gpio_set_value(triggers[0].gpio, 0);
+            // Start timeout timer
+            distanceTimeoutTimer.function = echo_timeout;
+            distanceTimeoutTimer.data = 0L;
+            distanceTimeoutTimer.expires = jiffies + (sampl_frequence*HZ);         // 30 ms @TODO calculate the sampl_freq
+            add_timer(&distanceTimeoutTimer);
+        }
+        if (echo1Finished) {
+            echo1Finished = false;
+            // process distance 1 value
+            printk(KERN_INFO "distance1: %d\n", distance1);
+        }
+        if (echo2Finished) {
+            echo2Finished = false;
+            // process distance 2 value
+            printk(KERN_INFO "distance2: %d\n", distance2);
+        }
+
+        /* Delay 1 microsecond */
+        udelay(1);
+    }
+}
 
 static int      raspi_gpio_open(struct inode *inode, struct file *filp) {
     try_module_get(THIS_MODULE);
@@ -180,6 +289,11 @@ static int __init gpiomode_init(void)
     int ret = 0;
     int tmp;
 
+    // Init all flags
+    startMeasureDistance = false;
+    echo1Finished = false;
+    echo2Finished = false;
+
     printk(KERN_INFO "%s\n", __func__);
 
     // register trigger pin
@@ -211,7 +325,7 @@ static int __init gpiomode_init(void)
 
     printk(KERN_INFO "Successfully requested BUTTON1 IRQ # %d\n", echo_irqs[0]);
 
-    ret = request_irq(echo_irqs[0], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "gpiomod#button1", NULL);
+    ret = request_irq(echo_irqs[0], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "dual_hcsr04#echo1", NULL);
 
     if(ret) {
         printk(KERN_ERR "Unable to request IRQ: %d\n", ret);
@@ -230,7 +344,7 @@ static int __init gpiomode_init(void)
 
     printk(KERN_INFO "Successfully requested BUTTON2 IRQ # %d\n", echo_irqs[1]);
 
-    ret = request_irq(echo_irqs[1], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "gpiomod#button2", NULL);
+    ret = request_irq(echo_irqs[1], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "dual_hcsr04#echo2", NULL);
 
     if(ret) {
         printk(KERN_ERR "Unable to request IRQ: %d\n", ret);
@@ -247,6 +361,10 @@ static int __init gpiomode_init(void)
 
     /* Initialize timer for scheduling */
     init_timer(&schedule_timer);
+    init_timer(&distanceTimeoutTimer);
+
+    /* Create and start the distance measuring thread */
+    runThreads[0] = kthread_run(&get_distance_thread,(void *)NULL,"distance");
 
     return 0;
 
@@ -276,6 +394,10 @@ static void __exit gpiomode_exit(void)
     unregister_chrdev(DEVICE_MAJOR, DEVICE_NAME);
 
     del_timer_sync(&schedule_timer);
+    del_timer_sync(&distanceTimeoutTimer);
+
+    // stop threads
+    kthread_stop(runThreads[0]);
 
     // free irqs
     free_irq(echo_irqs[0], NULL);
