@@ -274,6 +274,8 @@ static ssize_t  raspi_gpio_write (  struct file *filp,
     }
     sampl_frequence = rate;
     raspi_update_timer();
+    // Start measurement
+    startMeasureDistance = true;
 
     printk(KERN_INFO "Sample frequence: %d", sampl_frequence);
     return bytes_writen;
