@@ -167,9 +167,8 @@ static void echo_timeout(unsigned long data)
  */
 static int get_distance_thread(void *data)
 {
-    uint idx = (uint) data;
-
-    while(!threadStops[idx]) {
+    printk (KERN_INFO "Get distance thread start.");
+    while(!threadStops[0]) {
         if (startMeasureDistance) {
             startMeasureDistance = false;
             // Set trigger pin in 2us
