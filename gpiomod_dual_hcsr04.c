@@ -14,6 +14,7 @@
 #include <linux/timer.h>
 #include <linux/time.h>
 #include <linux/init.h>
+#include <linux/kthread.h>
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
@@ -41,6 +42,7 @@ static struct gpio echos[] = {
 static int echo_irqs[] = { -1, -1 };
 
 static struct task_struct *runThreads[2];
+static bool threadStops[2] = {false, false};
 
 /* Frequence of sampling */
 static int sampl_frequence = 0;
@@ -164,8 +166,9 @@ static void echo_timeout(unsigned long data)
  */
 static int get_distance_thread(void *data)
 {
+    uint idx = (uint) data;
 
-    while(true) {
+    while(!threadStops[idx]) {
         if (startMeasureDistance) {
             startMeasureDistance = false;
             // Set trigger pin in 2us
@@ -325,7 +328,7 @@ static int __init gpiomode_init(void)
 
     printk(KERN_INFO "Successfully requested BUTTON1 IRQ # %d\n", echo_irqs[0]);
 
-    ret = request_irq(echo_irqs[0], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "dual_hcsr04#echo1", NULL);
+    ret = request_irq(echo_irqs[0], echo_isr, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "dual_hcsr04#echo1", NULL);
 
     if(ret) {
         printk(KERN_ERR "Unable to request IRQ: %d\n", ret);
@@ -344,7 +347,7 @@ static int __init gpiomode_init(void)
 
     printk(KERN_INFO "Successfully requested BUTTON2 IRQ # %d\n", echo_irqs[1]);
 
-    ret = request_irq(echo_irqs[1], echo_isr, IRQF_TRIGGER_RISING | IRQF_DISABLED, "dual_hcsr04#echo2", NULL);
+    ret = request_irq(echo_irqs[1], echo_isr, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "dual_hcsr04#echo2", NULL);
 
     if(ret) {
         printk(KERN_ERR "Unable to request IRQ: %d\n", ret);
@@ -397,6 +400,8 @@ static void __exit gpiomode_exit(void)
     del_timer_sync(&distanceTimeoutTimer);
 
     // stop threads
+    threadStops[0] = true;
+    threadStops[1] = true;
     kthread_stop(runThreads[0]);
 
     // free irqs
