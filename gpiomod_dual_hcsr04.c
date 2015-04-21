@@ -13,6 +13,8 @@
 #include <linux/sched.h>
 #include <linux/timer.h>
 #include <linux/time.h>
+#include <linux/delay.h>
+#include <uapi/linux/time.h>
 #include <linux/init.h>
 #include <linux/kthread.h>
 #include <linux/string.h>
