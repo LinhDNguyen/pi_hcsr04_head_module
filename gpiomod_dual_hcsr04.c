@@ -6,17 +6,16 @@
  *
  */
 
+#include <linux/time.h>
 #include <linux/module.h>
+#include <linux/kthread.h>
 #include <linux/kernel.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
-#include <linux/time.h>
 #include <linux/delay.h>
-#include <uapi/linux/time.h>
 #include <linux/init.h>
-#include <linux/kthread.h>
 #include <linux/string.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
@@ -50,7 +49,7 @@ static bool threadStops[2] = {false, false};
 static int sampl_frequence = 0;
 
 /* Echo signals time */
-static timespec startEcho1, startEcho2, endEcho1, endEcho2;
+static struct timespec startEcho1, startEcho2, endEcho1, endEcho2;
 
 static uint distance1, distance2;
 
@@ -197,6 +196,7 @@ static int get_distance_thread(void *data)
         /* Delay 1 microsecond */
         udelay(1);
     }
+    return 0;
 }
 
 static int      raspi_gpio_open(struct inode *inode, struct file *filp) {
@@ -243,8 +243,8 @@ static ssize_t  raspi_gpio_write (  struct file *filp,
                                     const char *buf,
                                     size_t count,
                                     loff_t *f_pos) {
-    char tmp[100], *endptr;
-    long rate, i;
+    char tmp[100];
+    long rate;
     int maxbytes; /*maximum bytes that can be read from f_pos to BUFFER_SIZE*/
     int bytes_to_write; /* gives the number of bytes to write*/
     int bytes_writen;/*number of bytes actually writen*/
@@ -270,7 +270,7 @@ static ssize_t  raspi_gpio_write (  struct file *filp,
     }
     if ((rate < 0) || (rate > MAXIMUM_RATE))
     {
-        printk(KERN_ERR "Sampling frequence must in range [0..50], current is %d", rate);
+        printk(KERN_ERR "Sampling frequence must in range [0..50], current is %ld", rate);
         return -1;
     }
     sampl_frequence = rate;
